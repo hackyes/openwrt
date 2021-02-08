@@ -1,0 +1,103 @@
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -1406,6 +1406,27 @@ ppp_get_stats64(struct net_device *dev,
+ 	stats64->rx_length_errors = dev->stats.rx_length_errors;
+ }
+ 
++static int ppp_dev_fill_forward_path(struct net_device_path_ctx *ctx,
++				     struct net_device_path *path)
++{
++	struct ppp *ppp = netdev_priv(ctx->dev);
++	struct channel *pch;
++	struct ppp_channel *chan;
++
++	if (ppp->flags & SC_MULTILINK)
++		return -EOPNOTSUPP;
++
++	if (list_empty(&ppp->channels))
++		return -ENODEV;
++
++	pch = list_first_entry(&ppp->channels, struct channel, clist);
++	chan = pch->chan;
++	if (!chan->ops->fill_forward_path)
++		return -EOPNOTSUPP;
++
++	return chan->ops->fill_forward_path(chan, ctx, path);
++}
++
+ static int ppp_dev_init(struct net_device *dev)
+ {
+ 	struct ppp *ppp;
+@@ -1456,6 +1477,7 @@ static const struct net_device_ops ppp_n
+ 	.ndo_start_xmit  = ppp_start_xmit,
+ 	.ndo_do_ioctl    = ppp_net_ioctl,
+ 	.ndo_get_stats64 = ppp_get_stats64,
++	.ndo_fill_forward_path	= ppp_dev_fill_forward_path,
+ };
+ 
+ static struct device_type ppp_type = {
+--- a/drivers/net/ppp/pppoe.c
++++ b/drivers/net/ppp/pppoe.c
+@@ -972,8 +972,29 @@ static int pppoe_xmit(struct ppp_channel
+ 	return __pppoe_xmit(sk, skb);
+ }
+ 
++static int pppoe_fill_forward_path(struct ppp_channel *chan,
++				   struct net_device_path_ctx *ctx,
++				   struct net_device_path *path)
++{
++	struct sock *sk = (struct sock *)chan->private;
++	struct pppox_sock *po = pppox_sk(sk);
++	struct net_device *dev = po->pppoe_dev;
++
++	if (sock_flag(sk, SOCK_DEAD) ||
++	    !(sk->sk_state & PPPOX_CONNECTED) || !dev)
++		return -ENODEV;
++
++	path->type = DEV_PATH_PPPOE;
++	path->pppoe.sid = po->num;
++	path->dev = ctx->dev;
++	ctx->dev = dev;
++
++	return 0;
++}
++
+ static const struct ppp_channel_ops pppoe_chan_ops = {
+ 	.start_xmit = pppoe_xmit,
++	.fill_forward_path = pppoe_fill_forward_path,
+ };
+ 
+ static int pppoe_recvmsg(struct socket *sock, struct msghdr *m,
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -841,6 +841,7 @@ enum net_device_path_type {
+ 	DEV_PATH_VLAN,
+ 	DEV_PATH_BRIDGE,
+ 	DEV_PATH_DSA,
++	DEV_PATH_PPPOE,
+ };
+ 
+ struct net_device_path {
+@@ -864,6 +865,9 @@ struct net_device_path {
+ 			int port;
+ 			u16 proto;
+ 		} dsa;
++		struct {
++			__be16 sid;
++		} pppoe;
+ 	};
+ };
+ 
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -28,6 +28,10 @@ struct ppp_channel_ops {
+ 	int	(*start_xmit)(struct ppp_channel *, struct sk_buff *);
+ 	/* Handle an ioctl call that has come in via /dev/ppp. */
+ 	int	(*ioctl)(struct ppp_channel *, unsigned int, unsigned long);
++	/* Get the forwarding path to reach the real device from the HW destination address */
++	int	(*fill_forward_path)(struct ppp_channel *,
++				     struct net_device_path_ctx *,
++				     struct net_device_path *);
+ };
+ 
+ struct ppp_channel {
