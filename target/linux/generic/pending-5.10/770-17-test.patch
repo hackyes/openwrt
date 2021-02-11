@@ -78,7 +78,7 @@
  };
  
  struct net_device_path {
-@@ -864,6 +865,9 @@ struct net_device_path {
+@@ -865,6 +866,9 @@ struct net_device_path {
  			int port;
  			u16 proto;
  		} dsa;
@@ -101,3 +101,68 @@
  };
  
  struct ppp_channel {
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -119,6 +119,8 @@ struct flow_offload_tuple {
+ 	/* All members above are keys for lookups, see flow_offload_hash(). */
+ 	struct { }			__hash;
+ 
++	__be16				in_pppoe_sid;
++
+ 	struct {
+ 		u16			id;
+ 		__be16			proto;
+@@ -181,6 +183,7 @@ struct nf_flow_route {
+ 		struct dst_entry		*dst;
+ 		struct {
+ 			u32			ifindex;
++			__be16			pppoe_sid;
+ 			u16			vid[NF_FLOW_TABLE_VLAN_MAX];
+ 			__be16			vproto[NF_FLOW_TABLE_VLAN_MAX];
+ 			struct {
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -92,6 +92,7 @@ static int flow_offload_fill_route(struc
+ 	}
+ 
+ 	flow_tuple->iifidx = route->tuple[dir].in.ifindex;
++	flow_tuple->in_pppoe_sid = route->tuple[dir].in.pppoe_sid;
+ 	for (i = route->tuple[dir].in.num_vlans - 1; i >= 0; i--) {
+ 		flow_tuple->in_vlan[j].id = route->tuple[dir].in.vid[i];
+ 		flow_tuple->in_vlan[j].proto = route->tuple[dir].in.vproto[i];
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -65,6 +65,7 @@ static int nft_dev_fill_forward_path(con
+ 
+ struct nft_forward_info {
+ 	const struct net_device *dev;
++	__be16 pppoe_sid;
+ 	__u16 vid[NF_FLOW_TABLE_VLAN_MAX];
+ 	__be16 vproto[NF_FLOW_TABLE_VLAN_MAX];
+ 	struct {
+@@ -101,6 +102,7 @@ static void nft_dev_path_info(const stru
+ 		case DEV_PATH_ETHERNET:
+ 		case DEV_PATH_DSA:
+ 		case DEV_PATH_VLAN:
++		case DEV_PATH_PPPOE:
+ 			info->dev = path->dev;
+ 			if (is_zero_ether_addr(info->h_source))
+ 				memcpy(info->h_source, path->dev->dev_addr, ETH_ALEN);
+@@ -111,6 +113,9 @@ static void nft_dev_path_info(const stru
+ 				i = stack->num_paths;
+ 				break;
+ 			}
++			if (path->type == DEV_PATH_PPPOE) {
++				info->pppoe_sid = path->pppoe.sid;
++			}
+ 
+ 			/* DEV_PATH_VLAN */
+ 			if (info->num_vlans >= NF_FLOW_TABLE_VLAN_MAX) {
+@@ -189,6 +194,7 @@ static void nft_dev_forward_path(struct
+ 		return;
+ 
+ 	route->tuple[!dir].in.ifindex = info.dev->ifindex;
++	route->tuple[!dir].in.pppoe_sid = info.pppoe_sid;
+ 	for (i = 0; i < info.num_vlans; i++) {
+ 		route->tuple[!dir].in.vid[i] = info.vid[i];
+ 		route->tuple[!dir].in.vproto[i] = info.vproto[i];
